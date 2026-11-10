@@ -108,3 +108,4 @@ C:\Users\Admin\Documents\AntiGravity_Projects\School Admission System\backend\Sc
 C:\Users\Admin\Documents\AntiGravity_Projects\School Admission System\backend\SchoolAdmission.Api\obj\Debug\net8.0\SchoolAdmission.Api.pdb
 C:\Users\Admin\Documents\AntiGravity_Projects\School Admission System\backend\SchoolAdmission.Api\obj\Debug\net8.0\SchoolAdmission.Api.genruntimeconfig.cache
 C:\Users\Admin\Documents\AntiGravity_Projects\School Admission System\backend\SchoolAdmission.Api\obj\Debug\net8.0\ref\SchoolAdmission.Api.dll
+C:\Users\Admin\Documents\AntiGravity_Projects\School Admission System\backend\SchoolAdmission.Api\obj\Debug\net8.0\SchoolAdmission.Api.sourcelink.json

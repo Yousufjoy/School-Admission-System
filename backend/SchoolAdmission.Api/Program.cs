@@ -1,5 +1,10 @@
+using System.Text.Json;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SchoolAdmission.Api.Data;
+using SchoolAdmission.Api.Dtos;
+using SchoolAdmission.Api.Middleware;
+using SchoolAdmission.Api.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -8,7 +13,46 @@ var connectionString = ResolveConnectionString(builder.Configuration);
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
 
-builder.Services.AddControllers();
+builder.Services.AddSingleton(new HoldOptions
+{
+    HoldDurationSeconds = HoldOptions.ResolveHoldDurationSeconds(builder.Configuration)
+});
+
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.AllowAnyOrigin()
+            .AllowAnyMethod()
+            .AllowAnyHeader();
+    });
+});
+
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+        options.JsonSerializerOptions.DictionaryKeyPolicy = JsonNamingPolicy.CamelCase;
+    })
+    .ConfigureApiBehaviorOptions(options =>
+    {
+        options.InvalidModelStateResponseFactory = context =>
+        {
+            var errors = context.ModelState
+                .Where(entry => entry.Value?.Errors.Count > 0)
+                .ToDictionary(
+                    entry => JsonNamingPolicy.CamelCase.ConvertName(entry.Key),
+                    entry => entry.Value!.Errors
+                        .Select(e => string.IsNullOrWhiteSpace(e.ErrorMessage) ? "Invalid value." : e.ErrorMessage)
+                        .ToArray());
+
+            return new BadRequestObjectResult(new ApiErrorResponse(
+                "Validation failed.",
+                StatusCodes.Status400BadRequest,
+                errors));
+        };
+    });
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -29,13 +73,15 @@ if (!EF.IsDesignTime)
     }
 }
 
+app.UseMiddleware<GlobalExceptionMiddleware>();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+app.UseCors();
 
 app.UseAuthorization();
 
