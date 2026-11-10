@@ -1,0 +1,11 @@
+{
+  "Version": 1,
+  "Hash": "inVDXtHRX5OQw0kvPHjBd1ijjvnMRy9o6skqlCZg57w=",
+  "Source": "SchoolAdmission.Api",
+  "BasePath": "_content/SchoolAdmission.Api",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [],
+  "Assets": []
+}
