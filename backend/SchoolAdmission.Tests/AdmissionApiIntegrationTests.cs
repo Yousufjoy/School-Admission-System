@@ -1,16 +1,10 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
 using SchoolAdmission.Api.Data;
 using SchoolAdmission.Api.Middleware;
@@ -23,61 +17,6 @@ public sealed class AdmissionApiIntegrationTests
 {
     private const string StudentA = "12345678901234567";
     private const string StudentB = "76543210987654321";
-
-    private sealed class TestApiFactory : WebApplicationFactory<Program>
-    {
-        private readonly string _databaseName = $"admission_test_{Guid.NewGuid():N}";
-        private readonly int? _holdDurationSeconds;
-
-        public TestApiFactory(int? holdDurationSeconds = null)
-        {
-            _holdDurationSeconds = holdDurationSeconds;
-        }
-
-        protected override void ConfigureWebHost(IWebHostBuilder builder)
-        {
-            if (_holdDurationSeconds.HasValue)
-            {
-                builder.UseSetting("HOLD_DURATION_SECONDS", _holdDurationSeconds.Value.ToString());
-            }
-
-            builder.ConfigureServices(services =>
-            {
-                services.RemoveAll<DbContextOptions<AppDbContext>>();
-                services.RemoveAll<DbContextOptions>();
-                services.RemoveAll<AppDbContext>();
-
-                services.AddDbContext<AppDbContext>(options =>
-                    options.UseInMemoryDatabase(_databaseName));
-
-                if (_holdDurationSeconds.HasValue)
-                {
-                    services.RemoveAll<HoldOptions>();
-                    services.AddSingleton(new HoldOptions
-                    {
-                        HoldDurationSeconds = _holdDurationSeconds.Value
-                    });
-                }
-            });
-        }
-    }
-
-    private static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response)
-    {
-        var body = await response.Content.ReadAsStringAsync();
-        return JsonDocument.Parse(body);
-    }
-
-    private static HttpRequestMessage WithStudentHeader(HttpMethod method, string url, string? studentId)
-    {
-        var request = new HttpRequestMessage(method, url);
-        if (studentId is not null)
-        {
-            request.Headers.Add("X-Student-Id", studentId);
-        }
-
-        return request;
-    }
 
     [Fact]
     public void HoldOptions_ResolvesDefaultAndOverrides()
@@ -114,13 +53,13 @@ public sealed class AdmissionApiIntegrationTests
     [Fact]
     public async Task ClassesEndpoints_CreateListAndGetById_ReturnExactCamelCaseAnd404()
     {
-        using var factory = new TestApiFactory();
+        using var factory = new AdmissionTestFactory();
         using var client = factory.CreateClient();
 
         var createResponse = await client.PostAsJsonAsync("/classes", new { name = "Grade 1A", totalSeats = 3 });
         Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
 
-        using var createdJson = await ReadJsonAsync(createResponse);
+        using var createdJson = await AdmissionTestFactory.ReadJsonAsync(createResponse);
         var root = createdJson.RootElement;
         var classId = root.GetProperty("id").GetString();
         Assert.NotNull(classId);
@@ -130,7 +69,7 @@ public sealed class AdmissionApiIntegrationTests
 
         var listResponse = await client.GetAsync("/classes");
         Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
-        using var listJson = await ReadJsonAsync(listResponse);
+        using var listJson = await AdmissionTestFactory.ReadJsonAsync(listResponse);
         Assert.Equal(JsonValueKind.Array, listJson.RootElement.ValueKind);
         var listed = listJson.RootElement[0];
         Assert.Equal(classId, listed.GetProperty("id").GetString());
@@ -142,7 +81,7 @@ public sealed class AdmissionApiIntegrationTests
 
         var singleResponse = await client.GetAsync($"/classes/{classId}");
         Assert.Equal(HttpStatusCode.OK, singleResponse.StatusCode);
-        using var singleJson = await ReadJsonAsync(singleResponse);
+        using var singleJson = await AdmissionTestFactory.ReadJsonAsync(singleResponse);
         Assert.Equal(classId, singleJson.RootElement.GetProperty("id").GetString());
 
         var missingResponse = await client.GetAsync("/classes/c_missing1");
@@ -152,34 +91,34 @@ public sealed class AdmissionApiIntegrationTests
     [Fact]
     public async Task CreateHold_ValidatesStudentHeaderEnforcesDuplicatesCapacityAndDuration()
     {
-        using var factory = new TestApiFactory(holdDurationSeconds: 180);
+        using var factory = new AdmissionTestFactory(holdDurationSeconds: 180);
         using var client = factory.CreateClient();
 
         var classResponse = await client.PostAsJsonAsync("/classes", new { name = "Biology", totalSeats = 1 });
-        using var classDoc = await ReadJsonAsync(classResponse);
+        using var classDoc = await AdmissionTestFactory.ReadJsonAsync(classResponse);
         var classId = classDoc.RootElement.GetProperty("id").GetString()!;
 
         // Missing header -> 400
-        var missingHeader = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/classes/{classId}/holds", null));
+        var missingHeader = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/classes/{classId}/holds", null));
         Assert.Equal(HttpStatusCode.BadRequest, missingHeader.StatusCode);
 
         // Invalid format -> 400
-        var shortHeader = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/classes/{classId}/holds", "12345"));
+        var shortHeader = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/classes/{classId}/holds", "12345"));
         Assert.Equal(HttpStatusCode.BadRequest, shortHeader.StatusCode);
 
-        var alphaHeader = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/classes/{classId}/holds", "1234567890123456a"));
+        var alphaHeader = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/classes/{classId}/holds", "1234567890123456a"));
         Assert.Equal(HttpStatusCode.BadRequest, alphaHeader.StatusCode);
 
         // Unknown class -> 404
-        var missingClass = await client.SendAsync(WithStudentHeader(HttpMethod.Post, "/classes/c_unknown1/holds", StudentA));
+        var missingClass = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, "/classes/c_unknown1/holds", StudentA));
         Assert.Equal(HttpStatusCode.NotFound, missingClass.StatusCode);
 
         // Valid hold -> 201 with exact camelCase and ISO-8601 UTC
         var before = DateTime.UtcNow;
-        var holdResponse = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/classes/{classId}/holds", StudentA));
+        var holdResponse = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/classes/{classId}/holds", StudentA));
         Assert.Equal(HttpStatusCode.Created, holdResponse.StatusCode);
 
-        using var holdDoc = await ReadJsonAsync(holdResponse);
+        using var holdDoc = await AdmissionTestFactory.ReadJsonAsync(holdResponse);
         var holdRoot = holdDoc.RootElement;
         var holdId = holdRoot.GetProperty("holdId").GetString()!;
         Assert.StartsWith("h_", holdId);
@@ -193,16 +132,16 @@ public sealed class AdmissionApiIntegrationTests
         Assert.InRange(expiresAt, before.AddSeconds(175), DateTime.UtcNow.AddSeconds(185));
 
         // Duplicate active hold for same student -> 409
-        var duplicateHold = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/classes/{classId}/holds", StudentA));
+        var duplicateHold = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/classes/{classId}/holds", StudentA));
         Assert.Equal(HttpStatusCode.Conflict, duplicateHold.StatusCode);
 
         // Class full for another student -> 409
-        var fullClassHold = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/classes/{classId}/holds", StudentB));
+        var fullClassHold = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/classes/{classId}/holds", StudentB));
         Assert.Equal(HttpStatusCode.Conflict, fullClassHold.StatusCode);
 
         // Seat counts updated
         var classAfterHold = await client.GetAsync($"/classes/{classId}");
-        using var afterDoc = await ReadJsonAsync(classAfterHold);
+        using var afterDoc = await AdmissionTestFactory.ReadJsonAsync(classAfterHold);
         Assert.Equal(1, afterDoc.RootElement.GetProperty("heldSeats").GetInt32());
         Assert.Equal(0, afterDoc.RootElement.GetProperty("confirmedSeats").GetInt32());
         Assert.Equal(0, afterDoc.RootElement.GetProperty("availableSeats").GetInt32());
@@ -211,47 +150,47 @@ public sealed class AdmissionApiIntegrationTests
     [Fact]
     public async Task ConfirmCancelAndMeHolds_EnforceOwnershipIdempotencyAndSeatUpdates()
     {
-        using var factory = new TestApiFactory();
+        using var factory = new AdmissionTestFactory();
         using var client = factory.CreateClient();
 
         var classResponse = await client.PostAsJsonAsync("/classes", new { name = "Physics", totalSeats = 1 });
-        using var classDoc = await ReadJsonAsync(classResponse);
+        using var classDoc = await AdmissionTestFactory.ReadJsonAsync(classResponse);
         var classId = classDoc.RootElement.GetProperty("id").GetString()!;
 
         // Hold for Student A
-        var holdResponse = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/classes/{classId}/holds", StudentA));
-        using var holdDoc = await ReadJsonAsync(holdResponse);
+        var holdResponse = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/classes/{classId}/holds", StudentA));
+        using var holdDoc = await AdmissionTestFactory.ReadJsonAsync(holdResponse);
         var holdId = holdDoc.RootElement.GetProperty("holdId").GetString()!;
 
         // Wrong student cannot confirm -> 403
-        var wrongConfirm = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/holds/{holdId}/confirm", StudentB));
+        var wrongConfirm = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/holds/{holdId}/confirm", StudentB));
         Assert.Equal(HttpStatusCode.Forbidden, wrongConfirm.StatusCode);
 
         // Wrong student cannot cancel -> 403
-        var wrongDelete = await client.SendAsync(WithStudentHeader(HttpMethod.Delete, $"/holds/{holdId}", StudentB));
+        var wrongDelete = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Delete, $"/holds/{holdId}", StudentB));
         Assert.Equal(HttpStatusCode.Forbidden, wrongDelete.StatusCode);
 
         // Confirm by owner -> 200 CONFIRMED
-        var confirm1 = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/holds/{holdId}/confirm", StudentA));
+        var confirm1 = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/holds/{holdId}/confirm", StudentA));
         Assert.Equal(HttpStatusCode.OK, confirm1.StatusCode);
-        using var confirmDoc1 = await ReadJsonAsync(confirm1);
+        using var confirmDoc1 = await AdmissionTestFactory.ReadJsonAsync(confirm1);
         Assert.Equal(holdId, confirmDoc1.RootElement.GetProperty("holdId").GetString());
         Assert.Equal("CONFIRMED", confirmDoc1.RootElement.GetProperty("status").GetString());
 
         // Idempotent second confirm -> 200 CONFIRMED
-        var confirm2 = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/holds/{holdId}/confirm", StudentA));
+        var confirm2 = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/holds/{holdId}/confirm", StudentA));
         Assert.Equal(HttpStatusCode.OK, confirm2.StatusCode);
-        using var confirmDoc2 = await ReadJsonAsync(confirm2);
+        using var confirmDoc2 = await AdmissionTestFactory.ReadJsonAsync(confirm2);
         Assert.Equal("CONFIRMED", confirmDoc2.RootElement.GetProperty("status").GetString());
 
         // Duplicate hold after confirm -> 409
-        var duplicateAfterConfirm = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/classes/{classId}/holds", StudentA));
+        var duplicateAfterConfirm = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/classes/{classId}/holds", StudentA));
         Assert.Equal(HttpStatusCode.Conflict, duplicateAfterConfirm.StatusCode);
 
         // GET /me/holds for Student A
-        var meResponse = await client.SendAsync(WithStudentHeader(HttpMethod.Get, "/me/holds", StudentA));
+        var meResponse = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Get, "/me/holds", StudentA));
         Assert.Equal(HttpStatusCode.OK, meResponse.StatusCode);
-        using var meDoc = await ReadJsonAsync(meResponse);
+        using var meDoc = await AdmissionTestFactory.ReadJsonAsync(meResponse);
         Assert.Equal(1, meDoc.RootElement.GetArrayLength());
         var myHold = meDoc.RootElement[0];
         Assert.Equal(holdId, myHold.GetProperty("holdId").GetString());
@@ -261,26 +200,26 @@ public sealed class AdmissionApiIntegrationTests
         Assert.EndsWith("Z", myHold.GetProperty("expiresAt").GetString()!);
 
         // Delete by owner -> 204 No Content and frees seat
-        var deleteResponse = await client.SendAsync(WithStudentHeader(HttpMethod.Delete, $"/holds/{holdId}", StudentA));
+        var deleteResponse = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Delete, $"/holds/{holdId}", StudentA));
         Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
 
         // Confirming cancelled hold -> 409 Conflict
-        var confirmCancelled = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/holds/{holdId}/confirm", StudentA));
+        var confirmCancelled = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/holds/{holdId}/confirm", StudentA));
         Assert.Equal(HttpStatusCode.Conflict, confirmCancelled.StatusCode);
 
         // Seat is free again for Student B
-        var holdBResponse = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/classes/{classId}/holds", StudentB));
+        var holdBResponse = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/classes/{classId}/holds", StudentB));
         Assert.Equal(HttpStatusCode.Created, holdBResponse.StatusCode);
     }
 
     [Fact]
     public async Task ExpiredHolds_ReportExpiredStatusAndFreeSeats()
     {
-        using var factory = new TestApiFactory();
+        using var factory = new AdmissionTestFactory();
         using var client = factory.CreateClient();
 
         var classResponse = await client.PostAsJsonAsync("/classes", new { name = "Chemistry", totalSeats = 1 });
-        using var classDoc = await ReadJsonAsync(classResponse);
+        using var classDoc = await AdmissionTestFactory.ReadJsonAsync(classResponse);
         var classId = classDoc.RootElement.GetProperty("id").GetString()!;
 
         var expiredHoldId = "h_deadbeef";
@@ -302,31 +241,31 @@ public sealed class AdmissionApiIntegrationTests
         // GET /holds/{holdId} returns EXPIRED
         var holdGet = await client.GetAsync($"/holds/{expiredHoldId}");
         Assert.Equal(HttpStatusCode.OK, holdGet.StatusCode);
-        using var holdGetDoc = await ReadJsonAsync(holdGet);
+        using var holdGetDoc = await AdmissionTestFactory.ReadJsonAsync(holdGet);
         Assert.Equal(expiredHoldId, holdGetDoc.RootElement.GetProperty("holdId").GetString());
         Assert.Equal(classId, holdGetDoc.RootElement.GetProperty("classId").GetString());
         Assert.Equal("EXPIRED", holdGetDoc.RootElement.GetProperty("status").GetString());
         Assert.EndsWith("Z", holdGetDoc.RootElement.GetProperty("expiresAt").GetString()!);
 
         // Confirming expired hold -> 409 Conflict
-        var confirmExpired = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/holds/{expiredHoldId}/confirm", StudentA));
+        var confirmExpired = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/holds/{expiredHoldId}/confirm", StudentA));
         Assert.Equal(HttpStatusCode.Conflict, confirmExpired.StatusCode);
 
         // Class shows 0 heldSeats and 1 availableSeat
         var classGet = await client.GetAsync($"/classes/{classId}");
-        using var classGetDoc = await ReadJsonAsync(classGet);
+        using var classGetDoc = await AdmissionTestFactory.ReadJsonAsync(classGet);
         Assert.Equal(0, classGetDoc.RootElement.GetProperty("heldSeats").GetInt32());
         Assert.Equal(1, classGetDoc.RootElement.GetProperty("availableSeats").GetInt32());
 
         // Student A can place a new hold after expiration
-        var retryHold = await client.SendAsync(WithStudentHeader(HttpMethod.Post, $"/classes/{classId}/holds", StudentA));
+        var retryHold = await client.SendAsync(AdmissionTestFactory.CreateRequest(HttpMethod.Post, $"/classes/{classId}/holds", StudentA));
         Assert.Equal(HttpStatusCode.Created, retryHold.StatusCode);
     }
 
     [Fact]
     public async Task InvalidInputsMalformedRoutesAndCors_AreHandledCleanlyWithout500()
     {
-        using var factory = new TestApiFactory();
+        using var factory = new AdmissionTestFactory();
         using var client = factory.CreateClient();
 
         // Invalid class creation payloads -> 400

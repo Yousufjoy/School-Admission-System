@@ -13,6 +13,7 @@ var connectionString = ResolveConnectionString(builder.Configuration);
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
 
+builder.Services.AddSingleton<InProcessLockRegistry>();
 builder.Services.AddSingleton(new HoldOptions
 {
     HoldDurationSeconds = HoldOptions.ResolveHoldDurationSeconds(builder.Configuration)

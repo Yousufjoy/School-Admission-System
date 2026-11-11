@@ -12,10 +12,12 @@ namespace SchoolAdmission.Api.Controllers;
 public sealed class HoldsController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly InProcessLockRegistry _lockRegistry;
 
-    public HoldsController(AppDbContext dbContext)
+    public HoldsController(AppDbContext dbContext, InProcessLockRegistry lockRegistry)
     {
         _dbContext = dbContext;
+        _lockRegistry = lockRegistry;
     }
 
     [HttpGet("{holdId}")]
@@ -47,9 +49,12 @@ public sealed class HoldsController : ControllerBase
         var studentId = AdmissionHelpers.RequireValidStudentId(Request);
         var validHoldId = AdmissionHelpers.ValidateRouteId(holdId, nameof(holdId));
 
-        await using var transaction = await _dbContext.BeginOptionalTransactionAsync(cancellationToken);
+        await using var lockScope = await _dbContext.AcquireHoldForUpdateAsync(
+            validHoldId,
+            _lockRegistry,
+            cancellationToken);
 
-        var (hold, errorResult) = await LoadOwnedHoldForUpdateAsync(validHoldId, studentId, cancellationToken);
+        var (hold, errorResult) = ValidateOwnedHold(lockScope.Entity, validHoldId, studentId);
         if (errorResult is not null)
         {
             return errorResult;
@@ -71,11 +76,7 @@ public sealed class HoldsController : ControllerBase
 
         hold.Status = HoldStatuses.Confirmed;
         await _dbContext.SaveChangesAsync(cancellationToken);
-
-        if (transaction is not null)
-        {
-            await transaction.CommitAsync(cancellationToken);
-        }
+        await lockScope.CommitAsync(cancellationToken);
 
         return Ok(new ConfirmHoldResponse(hold.Id, HoldStatuses.Confirmed));
     }
@@ -86,9 +87,12 @@ public sealed class HoldsController : ControllerBase
         var studentId = AdmissionHelpers.RequireValidStudentId(Request);
         var validHoldId = AdmissionHelpers.ValidateRouteId(holdId, nameof(holdId));
 
-        await using var transaction = await _dbContext.BeginOptionalTransactionAsync(cancellationToken);
+        await using var lockScope = await _dbContext.AcquireHoldForUpdateAsync(
+            validHoldId,
+            _lockRegistry,
+            cancellationToken);
 
-        var (hold, errorResult) = await LoadOwnedHoldForUpdateAsync(validHoldId, studentId, cancellationToken);
+        var (hold, errorResult) = ValidateOwnedHold(lockScope.Entity, validHoldId, studentId);
         if (errorResult is not null)
         {
             return errorResult;
@@ -96,21 +100,16 @@ public sealed class HoldsController : ControllerBase
 
         hold!.Status = HoldStatuses.Cancelled;
         await _dbContext.SaveChangesAsync(cancellationToken);
-
-        if (transaction is not null)
-        {
-            await transaction.CommitAsync(cancellationToken);
-        }
+        await lockScope.CommitAsync(cancellationToken);
 
         return NoContent();
     }
 
-    private async Task<(HoldEntity? Hold, IActionResult? ErrorResult)> LoadOwnedHoldForUpdateAsync(
+    private (HoldEntity? Hold, IActionResult? ErrorResult) ValidateOwnedHold(
+        HoldEntity? hold,
         string holdId,
-        string studentId,
-        CancellationToken cancellationToken)
+        string studentId)
     {
-        var hold = await _dbContext.FindHoldForUpdateAsync(holdId, cancellationToken);
         if (hold is null)
         {
             return (null, NotFound(new ApiErrorResponse($"Hold '{holdId}' was not found.", StatusCodes.Status404NotFound)));

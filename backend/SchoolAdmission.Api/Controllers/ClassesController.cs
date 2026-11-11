@@ -14,11 +14,16 @@ public sealed class ClassesController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly HoldOptions _holdOptions;
+    private readonly InProcessLockRegistry _lockRegistry;
 
-    public ClassesController(AppDbContext dbContext, HoldOptions holdOptions)
+    public ClassesController(
+        AppDbContext dbContext,
+        HoldOptions holdOptions,
+        InProcessLockRegistry lockRegistry)
     {
         _dbContext = dbContext;
         _holdOptions = holdOptions;
+        _lockRegistry = lockRegistry;
     }
 
     [HttpPost]
@@ -85,9 +90,12 @@ public sealed class ClassesController : ControllerBase
         var studentId = AdmissionHelpers.RequireValidStudentId(Request);
         var validClassId = AdmissionHelpers.ValidateRouteId(classId, nameof(classId));
 
-        await using var transaction = await _dbContext.BeginOptionalTransactionAsync(cancellationToken);
+        await using var lockScope = await _dbContext.AcquireClassForUpdateAsync(
+            validClassId,
+            _lockRegistry,
+            cancellationToken);
 
-        var targetClass = await _dbContext.FindClassForUpdateAsync(validClassId, cancellationToken);
+        var targetClass = lockScope.Entity;
         if (targetClass is null)
         {
             return NotFound(new ApiErrorResponse($"Class '{validClassId}' was not found.", StatusCodes.Status404NotFound));
@@ -133,11 +141,7 @@ public sealed class ClassesController : ControllerBase
 
         _dbContext.Holds.Add(hold);
         await _dbContext.SaveChangesAsync(cancellationToken);
-
-        if (transaction is not null)
-        {
-            await transaction.CommitAsync(cancellationToken);
-        }
+        await lockScope.CommitAsync(cancellationToken);
 
         var response = new CreateHoldResponse(
             hold.Id,
