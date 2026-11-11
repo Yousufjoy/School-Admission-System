@@ -61,17 +61,7 @@ var app = builder.Build();
 
 if (!EF.IsDesignTime)
 {
-    using var scope = app.Services.CreateScope();
-    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-    if (dbContext.Database.IsRelational())
-    {
-        dbContext.Database.Migrate();
-    }
-    else
-    {
-        dbContext.Database.EnsureCreated();
-    }
+    InitializeDatabaseWithRetry(app.Services, app.Logger);
 }
 
 app.UseMiddleware<GlobalExceptionMiddleware>();
@@ -106,5 +96,37 @@ public partial class Program
         return string.IsNullOrWhiteSpace(connectionString)
             ? DefaultConnectionString
             : connectionString;
+    }
+
+    private static void InitializeDatabaseWithRetry(IServiceProvider services, ILogger logger)
+    {
+        const int maxAttempts = 5;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            using var scope = services.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            if (!dbContext.Database.IsRelational())
+            {
+                dbContext.Database.EnsureCreated();
+                return;
+            }
+
+            try
+            {
+                dbContext.Database.Migrate();
+                return;
+            }
+            catch (Exception ex) when (attempt < maxAttempts)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Database migration attempt {Attempt}/{MaxAttempts} failed. Retrying in 2 seconds...",
+                    attempt,
+                    maxAttempts);
+                Thread.Sleep(TimeSpan.FromSeconds(2));
+            }
+        }
     }
 }

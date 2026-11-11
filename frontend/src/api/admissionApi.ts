@@ -9,12 +9,24 @@ import type {
 } from '../types/admission';
 import { toBengaliErrorMessage } from '../utils/admissionUtils';
 
-const rawBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
+function resolveApiBaseUrl(): string {
+  const candidates = [
+    typeof window !== 'undefined' ? window.__APP_CONFIG__?.VITE_BACKEND_URL : undefined,
+    typeof window !== 'undefined' ? window.__APP_CONFIG__?.VITE_API_BASE_URL : undefined,
+    import.meta.env.VITE_BACKEND_URL as string | undefined,
+    import.meta.env.VITE_API_BASE_URL as string | undefined,
+  ];
 
-export const API_BASE_URL =
-  rawBaseUrl && rawBaseUrl.trim().length > 0
-    ? rawBaseUrl.trim().replace(/\/+$/, '')
-    : 'http://localhost:5159';
+  for (const candidate of candidates) {
+    if (candidate && candidate.trim().length > 0) {
+      return candidate.trim().replace(/\/+$/, '');
+    }
+  }
+
+  return 'http://localhost:5159';
+}
+
+export const API_BASE_URL = resolveApiBaseUrl();
 
 export class AdmissionApiError extends Error {
   public readonly status: number;
